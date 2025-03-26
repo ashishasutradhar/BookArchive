@@ -51,7 +51,7 @@ LogLevel parseLogLevel(const std::string& level) {
     
     std::cerr << "Warning: Unknown log level '" << level << "'. Using default." << std::endl;
     
-    #ifdef DEBUG
+    #ifdef DEBUG_MODE
     return LogLevel::DEBUG;
     #else
     return LogLevel::ERROR;
@@ -61,7 +61,7 @@ LogLevel parseLogLevel(const std::string& level) {
 int main(int argc, char** argv) {
     std::string db_file = "book_archive.db";
     LogLevel log_level = 
-        #ifdef DEBUG
+        #ifdef DEBUG_MODE
             LogLevel::DEBUG;
         #else
             LogLevel::ERROR;
@@ -92,7 +92,7 @@ int main(int argc, char** argv) {
                 std::cout << "Book Archive Version: " << VERSION << std::endl;
                 std::cout << "Build date: " << __DATE__ << " " << __TIME__ << std::endl;
                 std::cout << "SQLite version: " << sqlite3_libversion() << std::endl;
-                #ifdef DEBUG
+                #ifdef DEBUG_MODE
                 std::cout << "Build type: Debug" << std::endl;
                 #else
                 std::cout << "Build type: Release" << std::endl;
