@@ -53,18 +53,15 @@ class BookArchive {
 private:
     sqlite3* db;
     std::string db_filename;
-    mutable std::shared_mutex db_mutex;  // Shared mutex for reader/writer pattern
+    std::shared_mutex db_mutex;  // Shared mutex for reader/writer pattern
     std::ofstream log_file;
     std::mutex log_mutex;  // Mutex specifically for logging
     std::atomic<bool> running;
     LogLevel current_log_level;
     
-    // Callback for SQLite queries that return results
-    static int queryCallback(void* data, int argc, char** argv, char** azColName);
-    
     // Prepared statement cache to improve performance
     std::unordered_map<std::string, sqlite3_stmt*> stmt_cache;
-    std::mutex stmt_cache_mutex;  // Protect statement cache
+    std::shared_mutex stmt_cache_mutex;  // Protect statement cache
     
     // Execute SQL with proper parameter binding (prevents SQL injection)
     bool executeSQLWithParams(const std::string& sql, const std::vector<std::string>& params = {});
@@ -89,7 +86,7 @@ private:
 
 public:
     BookArchive(const std::string& db_file = "book_archive.db", LogLevel log_level = 
-        #ifdef DEBUG
+        #ifdef DEBUG_MODE
             LogLevel::DEBUG
         #else
             LogLevel::ERROR
