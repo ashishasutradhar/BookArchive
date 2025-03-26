@@ -64,7 +64,7 @@ BookArchive::~BookArchive() {
 }
 
 bool BookArchive::initializeDatabase() {
-    std::unique_lock<std::shared_mutex> lock(db_mutex);
+    std::lock_guard<std::shared_mutex> lock(db_mutex);
     
     // Open database connection
     int rc = sqlite3_open(db_filename.c_str(), &db);
@@ -82,7 +82,7 @@ bool BookArchive::initializeDatabase() {
         "PRAGMA cache_size = 1000;",
         "PRAGMA temp_store = MEMORY;"
     };
-    
+
     for (const auto& pragma : pragmas) {
         char* errmsg = nullptr;
         rc = sqlite3_exec(db, pragma, nullptr, nullptr, &errmsg);
@@ -136,6 +136,7 @@ void BookArchive::log(LogLevel level, const std::string& message) {
     }
     #endif
     
+    //exit function if log file is not open
     if (!log_file.is_open()) {
         return;
     }
@@ -154,15 +155,14 @@ void BookArchive::log(LogLevel level, const std::string& message) {
     log_file << "[" << timestamp.str() << "] [" << logLevelToString(level) << "] "
              << message << std::endl;
     
-    // Ensure data is written to disk for error logs
+    // Explicitely calling flush to ensure the error logs are immidiately writen on to the disk.
     if (level == LogLevel::ERROR) {
         log_file.flush();
     }
 }
 
 void BookArchive::cleanupStatements() {
-    std::lock_guard<std::mutex> lock(stmt_cache_mutex);
-    
+    std::lock_guard<std::shared_mutex> lock(stmt_cache_mutex);
     for (auto& stmt_pair : stmt_cache) {
         if (stmt_pair.second) {
             sqlite3_finalize(stmt_pair.second);
@@ -174,34 +174,23 @@ void BookArchive::cleanupStatements() {
 }
 
 sqlite3_stmt* BookArchive::getPreparedStatement(const std::string& sql) {
-    log(LogLevel::ERROR, "Entered getPreparedStatement()"); //remove
-    // First try to find in cache without db locking for better performance
+    // First try to find in cache with read lock
     {
-        log(LogLevel::ERROR, "checking cache"); //remove
-        //std::shared_lock<std::shared_mutex> db_lock(db_mutex);
-        std::lock_guard<std::mutex> cache_lock(stmt_cache_mutex);
-        log(LogLevel::ERROR, "cache lock aquired"); //remove
+        std::shared_lock<std::shared_mutex> cache_lock(stmt_cache_mutex);
         auto it = stmt_cache.find(sql);
         if (it != stmt_cache.end()) {
-            log(LogLevel::ERROR, "cache entry found"); //remove
             return it->second;
         }
-        log(LogLevel::ERROR, "cache lock released"); //remove
     }
     
     // Need to prepare the statement and add to cache
-    std::lock_guard<std::mutex> cache_lock(stmt_cache_mutex);
-    log(LogLevel::ERROR, "cache lock aquired again"); //remove
-    // std::unique_lock<std::shared_mutex> db_lock(db_mutex);
-    // log(LogLevel::ERROR, "db lock aquired"); //remove
-    log(LogLevel::ERROR, "checking cache again after taking db lock"); //remove
-    // Check again after acquiring db lock
+    std::lock_guard<std::shared_mutex> cache_lock(stmt_cache_mutex);
+    // Check again after acquiring write lock
     auto it = stmt_cache.find(sql);
     if (it != stmt_cache.end()) {
         return it->second;
     }
     
-    log(LogLevel::ERROR, "calling sqlite3_prepare_v2()"); //remove
     // Prepare statement
     sqlite3_stmt* stmt = nullptr;
     int rc = sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr);
@@ -210,7 +199,6 @@ sqlite3_stmt* BookArchive::getPreparedStatement(const std::string& sql) {
             std::string(sqlite3_errmsg(db)) + " for SQL: " + sql);
         return nullptr;
     }
-    log(LogLevel::ERROR, "calling sql statement prepared."); //remove
     // Add to cache
     stmt_cache[sql] = stmt;
     return stmt;
@@ -218,23 +206,19 @@ sqlite3_stmt* BookArchive::getPreparedStatement(const std::string& sql) {
 
 bool BookArchive::executeSQLWithParams(const std::string& sql, 
                                         const std::vector<std::string>& params) {
-    log(LogLevel::ERROR, "Entered executeSQLWithParams()"); //remove
     log(LogLevel::DEBUG, "Executing SQL: " + sql + " with " + 
         std::to_string(params.size()) + " parameters");
     
-    log(LogLevel::ERROR, "calling getPreparedStatement()"); //remove
     sqlite3_stmt* stmt = getPreparedStatement(sql);
     if (!stmt) {
         return false;
     }
 
-    log(LogLevel::ERROR, "final sql: " + std::string(sqlite3_sql(stmt))); //remove
     
     // Reset statement before binding parameters
     sqlite3_reset(stmt);
     sqlite3_clear_bindings(stmt);
     
-    log(LogLevel::ERROR, "calling sqlite3_bind_text()"); //remove
     // Bind parameters
     for (size_t i = 0; i < params.size(); ++i) {
         int rc = sqlite3_bind_text(stmt, i + 1, params[i].c_str(), -1, SQLITE_TRANSIENT);
@@ -245,7 +229,6 @@ bool BookArchive::executeSQLWithParams(const std::string& sql,
         }
     }
     
-    log(LogLevel::ERROR, "calling sqlite3_step()"); //remove
     // Execute with retry for SQLITE_BUSY errors
     int retries = 0;
     int rc;
@@ -264,29 +247,7 @@ bool BookArchive::executeSQLWithParams(const std::string& sql,
         log(LogLevel::ERROR, "Failed to execute SQL: " + std::string(sqlite3_errmsg(db)));
         return false;
     }
-    log(LogLevel::ERROR, "sql execution successful"); //remove
     return true;
-}
-
-int BookArchive::queryCallback(void* data, int argc, char** argv, char** azColName) {
-    std::vector<Book>* books = static_cast<std::vector<Book>*>(data);
-    
-    Book book;
-    for (int i = 0; i < argc; i++) {
-        std::string column = azColName[i];
-        std::string value = argv[i] ? argv[i] : "NULL";
-        
-        if (column == "id") {
-            book.id = std::stoi(value);
-        } else if (column == "title") {
-            book.title = value;
-        } else if (column == "author") {
-            book.author = value;
-        }
-    }
-    
-    books->push_back(book);
-    return 0;
 }
 
 std::vector<Book> BookArchive::executeQuery(const std::string& sql, 
@@ -363,13 +324,11 @@ bool BookArchive::addBook(int id, const std::string& title, const std::string& a
     log(LogLevel::INFO, "Adding book: ID=" + std::to_string(id) + ", Title='" + title + "', Author='" + author + "'");
     
     const std::string sql = "INSERT INTO books (id, title, author) VALUES (?, ?, ?);";
-    log(LogLevel::INFO, "sql: " + sql); //remove
     std::vector<std::string> params = {
         std::to_string(id),
         title,
         author
     };
-    log(LogLevel::ERROR, "Calling executeSQLWithParams()"); //remove
     if (!executeSQLWithParams(sql, params)) {
         log(LogLevel::ERROR, "Failed to add book");
         std::cout << "Error: Failed to add the book. Check logs for details." << std::endl;
@@ -547,7 +506,7 @@ void BookArchive::processCommand(const std::string& command) {
             if (title.empty() || author.empty()) {
                 throw std::runtime_error("Title and author cannot be empty");
             }
-            
+
             addBook(id, title, author);
         } else if (action == "delete") {
             int id;
@@ -622,14 +581,14 @@ void BookArchive::processCommand(const std::string& command) {
         } else if (action == "debug") {
             #ifdef DEBUG_MODE
             if (current_log_level == LogLevel::DEBUG) {
-                setLogLevel(LogLevel::DEBUG);
+                setLogLevel(LogLevel::INFO);
                 std::cout << "Logging level switched to INFO. Showing all logs." << std::endl;
             } else {
-                setLogLevel(LogLevel::INFO);
+                setLogLevel(LogLevel::DEBUG);
                 std::cout << "Logging level switched to DEBUG. Recording all DEBUG and ERROER logs only." << std::endl;
             }
             #else
-            std::cout << "Debug logging not available in release build." << std::endl;
+            std::cout << "Logging level switching is not available in release build. Log level set to ERROR" << std::endl;
             #endif
         } else if (action == "exit") {
             running = false;
